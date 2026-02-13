@@ -1,7 +1,6 @@
-import { useRenderer, useSources } from '@ws-ui/webform-editor';
+import { splitDatasourceID, unsubscribeFromDatasource, useRenderer, useSources, useWebformPath } from '@ws-ui/webform-editor';
 import cn from 'classnames';
 import { FC, useEffect, useMemo, useState } from 'react';
-
 import { ICustomizedEditorProps } from './CustomizedEditor.config';
 import { withHistory } from 'slate-history';
 import { Editable, Slate, withReact } from 'slate-react';
@@ -12,17 +11,26 @@ type Attribute = {
   label: string;
 };
 
-const CustomizedEditor: FC<ICustomizedEditorProps> = ({ style, className, classNames = [] }) => {
+const CustomizedEditor: FC<ICustomizedEditorProps> = ({ template, style, className, classNames = [] }) => {
   const { connect } = useRenderer();
   const {
     sources: { datasource },
   } = useSources();
-
+  const initialValue: Descendant[] = [
+    {
+      type: 'paragraph',
+      children: [
+        { text: 'This is editable plain text, just like a <textarea>!' },
+      ],
+    },
+  ];
   const [record, setRecord] = useState<datasources.IEntity>();
   const [attributes, setAttributes] = useState<Attribute[]>([]);
   const [showAttributes, setShowAttributes] = useState(false);
+  const [value, setValue] = useState<Descendant[]>(initialValue);
+  const [showPreview, setShowPreview] = useState(false);
   const editor = useMemo(() => withHistory(withReact(createEditor())), [])
-
+  const path = useWebformPath();
 
   useEffect(() => {
     if (!datasource) return;
@@ -49,20 +57,54 @@ const CustomizedEditor: FC<ICustomizedEditorProps> = ({ style, className, classN
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [datasource]);
 
-  const initialValue: Descendant[] = [
-    {
-      type: 'paragraph',
-      children: [
-        { text: 'This is editable plain text, just like a <textarea>! [UUID]' },
-      ],
-    },
-  ];
+  useEffect(() => {
+    if (!template) return;
 
-  const [value, setValue] = useState<Descendant[]>(initialValue);
-  const [showPreview, setShowPreview] = useState(false);
+    const { id, namespace } = splitDatasourceID(template);
+    const myTemplate =
+      window.DataSource.getSource(id, namespace) || window.DataSource.getSource(template, path);
+    if (!myTemplate) return;
+
+    const updateTemplate = async () => {
+      const val = await myTemplate.getValue();
+      if (!val) return;
+      const newNodes = [
+        {
+          type: 'paragraph' as const,
+          children: [
+            { text: val },
+          ],
+        },
+      ];
+      const { children } = editor;
+      if (children && children.length > 0) {
+        Transforms.removeNodes(editor, {
+          at: [0],
+          match: () => true,
+        });
+      }
+      Transforms.insertNodes(editor, newNodes, { at: [0] });
+      setValue([...newNodes]);
+    };
+    updateTemplate();
+    myTemplate.addListener('changed', updateTemplate);
+    return () => unsubscribeFromDatasource(myTemplate, updateTemplate);
+  }, [path]);
+
+  const handleSave = async () => {
+    if (!template) return;
+    const { id, namespace } = splitDatasourceID(template);
+    const myTemplate =
+      window.DataSource.getSource(id, namespace) || window.DataSource.getSource(template, path);
+    if (!myTemplate) return;
+    // Get plain text from editor
+    const text = value.map(block => (block as any).children?.map((c: any) => c.text).join('')).join('\n');
+    myTemplate.setValue(null, text);
+  };
+
 
   const toggleAttribute = (key: string) => {
-    // Always insert the placeholder [attribute] at the cursor
+    // insert the placeholder [attribute] at the cursor
     const placeholder = `[${key}]`;
     if (!editor.selection) {
       Transforms.select(editor, Editor.end(editor, [] as any));
@@ -71,12 +113,11 @@ const CustomizedEditor: FC<ICustomizedEditorProps> = ({ style, className, classN
     setShowAttributes(false);
   };
 
-  // Helper to flatten Slate value to plain text
   const getEditorText = () => {
     return value.map(block => (block as any).children?.map((c: any) => c.text).join('')).join('\n');
   };
 
-  // Helper to replace [attribute] with record values
+  // replace [attribute] with record values
   const getPreviewText = () => {
     const text = getEditorText();
     if (!record) return text;
@@ -198,8 +239,24 @@ const CustomizedEditor: FC<ICustomizedEditorProps> = ({ style, className, classN
           </Slate>
         </div>
 
-        {/* View button and preview */}
-        <div style={{ marginTop: 16, textAlign: 'right' }}>
+        {/* Save and View buttons */}
+        <div style={{ marginTop: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <button
+            type="button"
+            onClick={handleSave}
+            style={{
+              padding: '8px 16px',
+              borderRadius: 8,
+              border: '1px solid #10b981',
+              background: '#10b981',
+              color: '#fff',
+              cursor: 'pointer',
+              fontWeight: 600,
+              fontSize: 15,
+            }}
+          >
+            Save
+          </button>
           <button
             type="button"
             onClick={() => setShowPreview(s => !s)}

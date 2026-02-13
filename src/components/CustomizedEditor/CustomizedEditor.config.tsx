@@ -53,14 +53,13 @@ export default {
       },
     ],
     datasources: {
-      accept: ['string'],
+      accept: ['entity'],
     },
   },
   defaultProps: {
-    name: 'Qodly',
   },
 } as T4DComponentConfig<ICustomizedEditorProps>;
 
 export interface ICustomizedEditorProps extends webforms.ComponentProps {
-  name?: string;
+  template?: string;
 }
