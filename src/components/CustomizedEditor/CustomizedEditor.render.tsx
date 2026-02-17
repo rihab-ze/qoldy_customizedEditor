@@ -1,10 +1,11 @@
 import { splitDatasourceID, unsubscribeFromDatasource, useRenderer, useSources, useWebformPath } from '@ws-ui/webform-editor';
 import cn from 'classnames';
-import { FC, useEffect, useMemo, useState } from 'react';
+import { FC, useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import { ICustomizedEditorProps } from './CustomizedEditor.config';
 import { withHistory } from 'slate-history';
 import { Editable, Slate, withReact } from 'slate-react';
 import { createEditor, Descendant, Transforms, Editor } from 'slate';
+import debounce from 'lodash.debounce';
 
 type Attribute = {
   key: string;
@@ -24,38 +25,14 @@ const CustomizedEditor: FC<ICustomizedEditorProps> = ({ template, style, classNa
       ],
     },
   ];
-  const [record, setRecord] = useState<datasources.IEntity>();
+
   const [attributes, setAttributes] = useState<Attribute[]>([]);
   const [showAttributes, setShowAttributes] = useState(false);
   const [value, setValue] = useState<Descendant[]>(initialValue);
-  const [showPreview, setShowPreview] = useState(false);
+  const lastSavedValue = useRef<string>("");
+  const initialized = useRef(false);
   const editor = useMemo(() => withHistory(withReact(createEditor())), [])
   const path = useWebformPath();
-
-  useEffect(() => {
-    if (!datasource) return;
-
-    const listener = async (/* event */) => {
-      const v = await datasource.getValue();
-      setRecord(v);
-      setAttributes(
-        Object.values(datasource.dataclass.getAllAttributes())
-          .map(attr => ({
-            key: attr.name,
-            label: attr.name
-          }))
-      );
-    };
-
-    listener();
-
-    datasource.addListener('changed', listener);
-
-    return () => {
-      datasource.removeListener('changed', listener);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datasource]);
 
   useEffect(() => {
     if (!template) return;
@@ -66,6 +43,8 @@ const CustomizedEditor: FC<ICustomizedEditorProps> = ({ template, style, classNa
     if (!myTemplate) return;
 
     const updateTemplate = async () => {
+      if (initialized.current) return;
+      initialized.current = true;
       const val = await myTemplate.getValue();
       if (!val) return;
       const newNodes = [
@@ -87,21 +66,34 @@ const CustomizedEditor: FC<ICustomizedEditorProps> = ({ template, style, classNa
       setValue([...newNodes]);
     };
     updateTemplate();
+    setAttributes(
+      Object.values(datasource.dataclass.getAllAttributes())
+        .map(attr => ({
+          key: attr.name,
+          label: attr.name
+        }))
+    );
     myTemplate.addListener('changed', updateTemplate);
     return () => unsubscribeFromDatasource(myTemplate, updateTemplate);
-  }, [path]);
+  }, [datasource]);
 
-  const handleSave = async () => {
-    if (!template) return;
-    const { id, namespace } = splitDatasourceID(template);
-    const myTemplate =
-      window.DataSource.getSource(id, namespace) || window.DataSource.getSource(template, path);
-    if (!myTemplate) return;
-    // Get plain text from editor
-    const text = value.map(block => (block as any).children?.map((c: any) => c.text).join('')).join('\n');
-    myTemplate.setValue(null, text);
-  };
-
+  const handleSave = useCallback(
+    debounce(async (customValue?: Descendant[]) => {
+      if (!template) return;
+      if (customValue && JSON.stringify(customValue) === template) return;
+      const { id, namespace } = splitDatasourceID(template);
+      const myTemplate =
+        window.DataSource.getSource(id, namespace) || window.DataSource.getSource(template, path);
+      if (!myTemplate) return;
+      // Get plain text from editor
+      const valToSave = customValue || value;
+      const text = valToSave.map(block => (block as any).children?.map((c: any) => c.text).join('')).join('\n');
+      if (lastSavedValue.current === text) return;
+      lastSavedValue.current = text;
+      myTemplate.setValue(null, text);
+    }, 200),
+    [template, path, value]
+  );
 
   const toggleAttribute = (key: string) => {
     // insert the placeholder [attribute] at the cursor
@@ -111,20 +103,6 @@ const CustomizedEditor: FC<ICustomizedEditorProps> = ({ template, style, classNa
     }
     Transforms.insertText(editor, placeholder);
     setShowAttributes(false);
-  };
-
-  const getEditorText = () => {
-    return value.map(block => (block as any).children?.map((c: any) => c.text).join('')).join('\n');
-  };
-
-  // replace [attribute] with record values
-  const getPreviewText = () => {
-    const text = getEditorText();
-    if (!record) return text;
-    return text.replace(/\[([^\]]+)\]/g, (_m, key) => {
-      const val = (record as any)[key];
-      return val === undefined || val === null ? '' : String(val);
-    });
   };
 
   return (
@@ -226,7 +204,9 @@ const CustomizedEditor: FC<ICustomizedEditorProps> = ({ template, style, classNa
             background: '#fff',
           }}
         >
-          <Slate editor={editor} value={value} onChange={v => setValue(v)}>
+          <Slate editor={editor} value={value} onChange={v => {
+            handleSave(v);
+          }}>
             <Editable
               placeholder="Type here..."
               style={{
@@ -238,62 +218,10 @@ const CustomizedEditor: FC<ICustomizedEditorProps> = ({ template, style, classNa
             />
           </Slate>
         </div>
-
-        {/* Save and View buttons */}
-        <div style={{ marginTop: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <button
-            type="button"
-            onClick={handleSave}
-            style={{
-              padding: '8px 16px',
-              borderRadius: 8,
-              border: '1px solid #10b981',
-              background: '#10b981',
-              color: '#fff',
-              cursor: 'pointer',
-              fontWeight: 600,
-              fontSize: 15,
-            }}
-          >
-            Save
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowPreview(s => !s)}
-            style={{
-              padding: '8px 16px',
-              borderRadius: 8,
-              border: '1px solid #4b68ff',
-              background: showPreview ? '#eef2ff' : '#4b68ff',
-              color: showPreview ? '#111' : '#fff',
-              cursor: 'pointer',
-              fontWeight: 600,
-              fontSize: 15,
-            }}
-          >
-            {showPreview ? 'Hide View' : 'View'}
-          </button>
-        </div>
-        {showPreview && (
-          <div
-            style={{
-              marginTop: 12,
-              padding: 16,
-              background: '#f8fafc',
-              border: '1px solid #c7d2fe',
-              borderRadius: 8,
-              fontSize: 15,
-              color: '#222',
-              whiteSpace: 'pre-wrap',
-              minHeight: 60,
-            }}
-          >
-            {getPreviewText()}
-          </div>
-        )}
       </div>
-    </div>
+    </div >
   );
 };
 
 export default CustomizedEditor;
+
